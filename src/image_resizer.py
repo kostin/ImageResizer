@@ -5,6 +5,10 @@
 обрезается), вес каждого файла не превышает 5 МБ, а имя копии начинается с
 разрешения: ``762x1100_имя.jpg`` и ``1524x2200_имя.jpg``.
 
+Во время работы показывает прогресс-бар с именем текущей картинки, в конце —
+краткий отчёт. Если вывод перенаправлен в файл (CI, лог), вместо полосы
+печатаются обычные строки.
+
 Примеры запуска::
 
     ImageResizer                 # обработать папку, где лежит программа
@@ -18,9 +22,11 @@ import sys
 import time
 from pathlib import Path
 
+import progress
 import resizer
 
 APP_NAME = "ImageResizer"
+APP_VERSION = "1.1.0"
 
 
 def app_directory() -> Path:
@@ -57,6 +63,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="обработать указанную папку вместо папки программы",
     )
     parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="не рисовать прогресс-бар, печатать по строке на файл",
+    )
+    parser.add_argument(
         "--no-pause",
         action="store_true",
         help="не ждать нажатия Enter после завершения",
@@ -83,32 +94,76 @@ def _pause(arguments: list[str], no_pause: bool) -> None:
         pass
 
 
-def _print_summary(summary: resizer.Summary, elapsed: float) -> None:
+def _plural(count: int, one: str, few: str, many: str) -> str:
+    """Русское склонение: 1 картинка, 2 картинки, 5 картинок."""
+    if count % 10 == 1 and count % 100 != 11:
+        return one
+    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        return few
+    return many
+
+
+def format_duration(seconds: float) -> str:
+    """Длительность: «3.4 с» или «1 мин 05 с»."""
+    if seconds < 60:
+        return f"{seconds:.1f} с"
+    minutes, rest = divmod(int(round(seconds)), 60)
+    return f"{minutes} мин {rest:02d} с"
+
+
+def _print_report(summary: resizer.Summary, elapsed: float) -> None:
+    """Краткий отчёт: сколько сделано, сколько весит, что пошло не так."""
     print()
     if not summary.sources:
         print("Итог: картинок не найдено.")
         return
 
+    sources = len(summary.sources)
+    copies = len(summary.outputs)
+    errors = len(summary.failed)
     print(
-        "Итог: картинок {sources}, копий {outputs}, ошибок {errors}; "
-        "всего {size}; время {elapsed:.1f} с".format(
-            sources=len(summary.sources),
-            outputs=len(summary.outputs),
-            errors=len(summary.failed),
+        "Итог: {sources} {sources_word} → {copies} {copies_word}, {size}, "
+        "время {elapsed}, ошибок {errors}".format(
+            sources=sources,
+            sources_word=_plural(sources, "картинка", "картинки", "картинок"),
+            copies=copies,
+            copies_word=_plural(copies, "копия", "копии", "копий"),
             size=resizer.human_size(summary.total_bytes),
-            elapsed=elapsed,
+            elapsed=format_duration(elapsed),
+            errors=errors,
         )
     )
+
+    for width, height in resizer.TARGET_SIZES:
+        selected = [
+            output
+            for output in summary.outputs
+            if (output.width, output.height) == (width, height)
+        ]
+        if not selected:
+            continue
+        total = sum(output.size_bytes for output in selected)
+        print(
+            "  {label}: {count} {word}, {size}".format(
+                label=f"{width}x{height}",
+                count=len(selected),
+                word=_plural(len(selected), "файл", "файла", "файлов"),
+                size=resizer.human_size(total),
+            )
+        )
 
     if summary.failed:
         print("\nНе удалось обработать:")
         for result in summary.failed:
             print(f"  • {result.source.name}: {result.error}")
 
-    if summary.oversized:
-        print("\nВнимание, превышен лимит веса:")
-        for output in summary.oversized:
-            print(f"  • {output.path.name}: {resizer.human_size(output.size_bytes)}")
+    if summary.warnings:
+        shown = summary.warnings[:10]
+        print(f"\nПредупреждения ({len(summary.warnings)}):")
+        for warning in shown:
+            print(f"  • {warning}")
+        if len(summary.warnings) > len(shown):
+            print(f"  • ...и ещё {len(summary.warnings) - len(shown)}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -123,12 +178,16 @@ def main(argv: list[str] | None = None) -> int:
         folder = folder.absolute()
 
     sizes = ", ".join(f"{width}x{height}" for width, height in resizer.TARGET_SIZES)
-    print(f"{APP_NAME}: папка {folder}")
+    print(f"{APP_NAME} {APP_VERSION}: папка {folder}")
     print(
         f"Размеры: {sizes}; лимит веса: {resizer.human_size(resizer.MAX_BYTES)}; "
         "кадрирование по центру"
     )
     print()
+
+    renderer = progress.ProgressRenderer(
+        enabled=False if args.no_progress else None
+    )
 
     exit_code = 0
     if not folder.is_dir():
@@ -137,13 +196,23 @@ def main(argv: list[str] | None = None) -> int:
     else:
         started = time.perf_counter()
         try:
-            summary = resizer.process_folder(folder, log=print)
+            summary = resizer.process_folder(
+                folder, log=renderer.log, progress=renderer.handle
+            )
+        except KeyboardInterrupt:
+            renderer.close()
+            print("\nПрервано пользователем.")
+            _pause(arguments, args.no_pause)
+            return 130
         except OSError as exc:
+            renderer.close()
             print(f"Ошибка: {exc}")
-            exit_code = 2
+            _pause(arguments, args.no_pause)
+            return 2
         else:
             elapsed = time.perf_counter() - started
-            _print_summary(summary, elapsed)
+            renderer.close()
+            _print_report(summary, elapsed)
             exit_code = 1 if summary.failed else 0
 
     _pause(arguments, args.no_pause)

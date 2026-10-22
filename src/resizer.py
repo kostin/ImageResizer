@@ -23,6 +23,7 @@ __all__ = [
     "MAX_BYTES",
     "TARGET_SIZES",
     "Output",
+    "ProgressEvent",
     "SourceResult",
     "Summary",
     "encode_jpeg_under_limit",
@@ -76,6 +77,8 @@ SOURCE_EXTENSIONS = frozenset(
 )
 
 LogCallback = Callable[[str], None]
+ProgressCallback = Callable[["ProgressEvent"], None]
+SizeCallback = Callable[["Output", int], None]
 
 
 @dataclass(frozen=True)
@@ -97,6 +100,7 @@ class SourceResult:
     source: Path
     outputs: list[Output] = field(default_factory=list)
     error: str | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -115,6 +119,10 @@ class Summary:
         return [item for item in self.sources if item.error is not None]
 
     @property
+    def warnings(self) -> list[str]:
+        return [warning for item in self.sources for warning in item.warnings]
+
+    @property
     def outputs(self) -> list[Output]:
         return [output for item in self.sources for output in item.outputs]
 
@@ -125,6 +133,23 @@ class Summary:
     @property
     def total_bytes(self) -> int:
         return sum(output.size_bytes for output in self.outputs)
+
+
+@dataclass(frozen=True)
+class ProgressEvent:
+    """Событие хода обработки — из него рисуется прогресс-бар.
+
+    ``phase``: ``begin`` (папка прочитана, известен total), ``start`` (взялись за
+    файл), ``size`` (записана очередная копия), ``error``, ``done``, ``end``.
+    ``fraction`` — общий прогресс от 0 до 1, ``detail`` — короткая подпись.
+    """
+
+    phase: str
+    index: int = 0
+    total: int = 0
+    fraction: float = 0.0
+    source: Path | None = None
+    detail: str = ""
 
 
 def human_size(size: int) -> str:
@@ -312,11 +337,12 @@ def _process_source(
     produced: set[str],
     result: SourceResult,
     emit: LogCallback,
+    on_size: SizeCallback | None = None,
 ) -> None:
     with Image.open(source) as opened:
         image = normalize(opened)
         try:
-            for width, height in sizes:
+            for step, (width, height) in enumerate(sizes, start=1):
                 canvas = fit(image, (width, height))
                 try:
                     data, quality, within_limit = encode_jpeg_under_limit(canvas, limit)
@@ -327,10 +353,12 @@ def _process_source(
                     folder, width, height, source.stem, produced
                 )
                 if destination is None:
-                    emit(
+                    message = (
                         f"    пропуск {width}x{height}: файл с таким именем уже есть "
                         "и это не JPEG — чтобы не перезаписать чужой файл"
                     )
+                    emit(message)
+                    result.warnings.append(message.strip())
                     continue
 
                 write_atomic(data, destination)
@@ -352,6 +380,13 @@ def _process_source(
                     f"    {destination.name} — {width}x{height}, "
                     f"{human_size(len(data))}, качество {quality}{note}"
                 )
+                if not within_limit:
+                    result.warnings.append(
+                        f"{destination.name}: вес {human_size(len(data))} больше лимита "
+                        f"{human_size(limit)}"
+                    )
+                if on_size is not None:
+                    on_size(output, step)
         finally:
             image.close()
 
@@ -362,32 +397,84 @@ def process_folder(
     sizes: Sequence[tuple[int, int]] = TARGET_SIZES,
     limit: int = MAX_BYTES,
     log: LogCallback | None = None,
+    progress: ProgressCallback | None = None,
 ) -> Summary:
     """Обрабатывает все картинки папки (без вложенных папок).
 
     Существующие копии перезаписываются, чужие не-JPEG файлы с совпадающим именем
     не трогаются. Ошибки по отдельным картинкам не прерывают обработку.
+    Ход работы сообщается в ``progress`` событиями :class:`ProgressEvent`.
     """
     folder = Path(folder)
     emit: LogCallback = log or (lambda _message: None)
+    send: ProgressCallback = progress or (lambda _event: None)
 
     sources = list_sources(folder)
+    total = len(sources)
     summary = Summary(folder=folder)
+    send(ProgressEvent(phase="begin", total=total))
     if not sources:
         emit("В папке нет картинок — обрабатывать нечего.")
+        send(ProgressEvent(phase="end", total=0, fraction=1.0))
         return summary
 
-    emit(f"Найдено картинок: {len(sources)}")
+    emit(f"Найдено картинок: {total}")
     produced: set[str] = set()
+    steps = max(len(sizes), 1)
 
     for number, source in enumerate(sources, start=1):
-        emit(f"[{number}/{len(sources)}] {source.name}")
+        emit(f"[{number}/{total}] {source.name}")
+        send(
+            ProgressEvent(
+                phase="start",
+                index=number,
+                total=total,
+                fraction=(number - 1) / total,
+                source=source,
+            )
+        )
+
+        def on_size(output: Output, step: int, _number: int = number, _source: Path = source) -> None:
+            send(
+                ProgressEvent(
+                    phase="size",
+                    index=_number,
+                    total=total,
+                    fraction=(_number - 1 + step / steps) / total,
+                    source=_source,
+                    detail=f"{output.width}x{output.height} → {human_size(output.size_bytes)}",
+                )
+            )
+
         result = SourceResult(source=source)
         try:
-            _process_source(source, folder, sizes, limit, produced, result, emit)
+            _process_source(
+                source, folder, sizes, limit, produced, result, emit, on_size
+            )
         except Exception as exc:  # noqa: BLE001 — одна битая картинка не должна рушить всё
             result = SourceResult(source=source, error=_describe_error(exc))
             emit(f"    ошибка: {result.error}")
+            send(
+                ProgressEvent(
+                    phase="error",
+                    index=number,
+                    total=total,
+                    fraction=number / total,
+                    source=source,
+                    detail=result.error or "",
+                )
+            )
+        else:
+            send(
+                ProgressEvent(
+                    phase="done",
+                    index=number,
+                    total=total,
+                    fraction=number / total,
+                    source=source,
+                )
+            )
         summary.sources.append(result)
 
+    send(ProgressEvent(phase="end", total=total, fraction=1.0))
     return summary

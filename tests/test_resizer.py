@@ -265,5 +265,68 @@ class ResizerTestCase(unittest.TestCase):
         self.assertGreater(quality, resizer.JPEG_QUALITY_MIN)
 
 
+    def test_progress_events_cover_the_whole_run(self) -> None:
+        self.make_image("a.png")
+        self.make_image("b.png")
+        events: list[resizer.ProgressEvent] = []
+
+        resizer.process_folder(
+            self.folder, log=self.messages.append, progress=events.append
+        )
+
+        phases = [event.phase for event in events]
+        self.assertEqual(phases[0], "begin")
+        self.assertEqual(phases[-1], "end")
+        self.assertEqual(events[0].total, 2)
+        self.assertEqual(phases.count("start"), 2)
+        self.assertEqual(phases.count("size"), 4)
+        self.assertEqual(phases.count("done"), 2)
+        self.assertNotIn("error", phases)
+
+        fractions = [event.fraction for event in events if event.phase != "begin"]
+        self.assertEqual(fractions, sorted(fractions))
+        self.assertAlmostEqual(fractions[-1], 1.0)
+
+        for event in events:
+            if event.phase == "size":
+                self.assertIn("→", event.detail)
+                self.assertIn("x", event.detail)
+
+    def test_progress_reports_error_and_skips_done(self) -> None:
+        (self.folder / "broken.jpg").write_bytes(b"not an image at all")
+        events: list[resizer.ProgressEvent] = []
+
+        resizer.process_folder(
+            self.folder, log=self.messages.append, progress=events.append
+        )
+
+        phases = [event.phase for event in events]
+        self.assertIn("error", phases)
+        self.assertNotIn("done", phases)
+        error = next(event for event in events if event.phase == "error")
+        self.assertEqual(error.source.name, "broken.jpg")
+        self.assertIn("распознать", error.detail)
+
+    def test_warnings_are_collected_for_skips(self) -> None:
+        self.make_image("photo.png")
+        (self.folder / "762x1100_photo.jpg").write_bytes(b"my own data")
+
+        summary = self.run_folder()
+
+        self.assertEqual(len(summary.warnings), 1)
+        self.assertIn("762x1100", summary.warnings[0])
+        self.assertEqual(len(summary.outputs), 1)
+
+    def test_empty_folder_sends_begin_and_end_only(self) -> None:
+        events: list[resizer.ProgressEvent] = []
+
+        resizer.process_folder(
+            self.folder, log=self.messages.append, progress=events.append
+        )
+
+        self.assertEqual([event.phase for event in events], ["begin", "end"])
+        self.assertEqual(events[0].total, 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
