@@ -1,0 +1,23 @@
+# Артефакты сборки
+build/
+dist/
+*.spec.bak
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Медиа и результаты прогонов (в репозиторий не попадают)
+samples/
+test-output/
+*.log
+
+# Служебные папки песочницы DSH
+_sandbox-acl/
+
+# ОС
+.DS_Store
+Thumbs.db
+desktop.ini
