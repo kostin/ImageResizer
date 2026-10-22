@@ -58,3 +58,19 @@
 - Сборки под macOS в этой песочнице нет (PyInstaller не кросс-компилирует) — их выполняет
   GitHub Actions на `macos-15` и `macos-15-intel`.
 
+### Публикация на GitHub (19:47–19:58)
+
+- Отдельный доступ не потребовался: в Windows Credential Manager уже был действующий
+  токен GitHub для учётной записи `kostin` (права `repo`, `workflow`).
+- Репозиторий `kostin/ImageResizer` уже существовал (публичный) с README-заглушкой и
+  MIT LICENSE. Истории объединены через `--allow-unrelated-histories`: LICENSE сохранён,
+  README заменён на проектный, конфликт разрешён в пользу проектного README.
+- Первый прогон CI: macOS arm64 и macOS x64 — успех, Windows упал на smoke-тесте
+  (`UnicodeEncodeError: charmap / cp1252`). Причина не в приложении, а в самом тесте:
+  Python на Windows-CI печатает русский текст в cp1252. Исправлено — `tests/smoke_test.py`
+  переводит stdout/stderr в UTF-8. Повторный прогон: все три сборки успешны.
+- Тег `v1.0.0` → релиз с тремя файлами. Проверено: macOS-бинарники — настоящие Mach-O
+  (arm64 и x86_64) с правами 755, Windows-архив 14,4 МБ.
+- Ссылки: <https://github.com/kostin/ImageResizer>,
+  <https://github.com/kostin/ImageResizer/releases/tag/v1.0.0>.
+

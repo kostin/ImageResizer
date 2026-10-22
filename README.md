@@ -1,6 +1,11 @@
 # ImageResizer
 
 Настольная утилита, которая делает JPEG-копии картинок **рядом с собой**.
+
+Готовые файлы: [Releases](https://github.com/kostin/ImageResizer/releases/latest) ·
+[Actions](https://github.com/kostin/ImageResizer/actions) ·
+[исходники](https://github.com/kostin/ImageResizer).
+
 Положите `ImageResizer.exe` (Windows) или `ImageResizer` (macOS) в папку с картинками,
 запустите — и для каждой картинки появятся две копии:
 
