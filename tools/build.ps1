@@ -49,7 +49,29 @@ try {
     if (-not (Test-Path -LiteralPath $exe)) { throw "Не найден $exe" }
 
     Write-Host ""
-    Write-Host ("Готово: {0} ({1:N1} МБ)" -f $exe, ((Get-Item -LiteralPath $exe).Length / 1MB)) -ForegroundColor Green
+    Write-Host ("Собрано: {0} ({1:N1} МБ)" -f $exe, ((Get-Item -LiteralPath $exe).Length / 1MB)) -ForegroundColor Green
+
+    # Проверка, что exe реально стартует. Если папка помечена низким уровнем
+    # целостности (Low IL), PyInstaller не сможет распаковаться в %TEMP%,
+    # и программа закроется сразу после запуска.
+    Write-Host "== Проверка запуска ==" -ForegroundColor Cyan
+    $probe = ""
+    try {
+        $probe = (& $exe --help 2>&1 | Out-String)
+    } catch {
+        $probe = $_.Exception.Message
+    }
+    if ($LASTEXITCODE -eq 0 -and $probe -match "usage") {
+        Write-Host "Exe запускается, справка отвечает." -ForegroundColor Green
+    } else {
+        Write-Warning "Exe не запустился в этой папке. Ответ: $($probe.Trim())"
+        Write-Warning "Похоже, папка помечена низким уровнем целостности (Low IL): тогда процесс не может писать в %TEMP%."
+        Write-Warning "Скопируйте exe в обычную папку (например, Загрузки) — там он запустится."
+        $rescue = Join-Path $env:USERPROFILE "Downloads\ImageResizer"
+        New-Item -ItemType Directory -Force -Path $rescue | Out-Null
+        Copy-Item -LiteralPath $exe -Destination (Join-Path $rescue "ImageResizer.exe") -Force
+        Write-Host ("Рабочая копия скопирована: {0}" -f (Join-Path $rescue "ImageResizer.exe")) -ForegroundColor Yellow
+    }
 }
 finally {
     Pop-Location
