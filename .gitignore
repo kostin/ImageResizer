@@ -16,6 +16,7 @@ test-output/
 
 # Служебные папки песочницы DSH
 _sandbox-acl/
+.local/
 
 # ОС
 .DS_Store

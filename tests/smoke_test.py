@@ -28,6 +28,18 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
+def configure_streams() -> None:
+    """UTF-8 вывод: приложение печатает по-русски, а консоль Windows бывает cp866/cp1252."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+
 def make_images(folder: Path) -> None:
     Image.new("RGB", (900, 1200), (180, 60, 40)).save(folder / "portrait.png")
     Image.new("RGB", (2600, 1000), (40, 120, 180)).save(folder / "landscape.jpg")
@@ -75,6 +87,7 @@ def check_outputs(folder: Path, expected_files: set[str]) -> None:
 
 
 def main(argv: list[str]) -> int:
+    configure_streams()
     if len(argv) != 2:
         print(__doc__)
         return 2
